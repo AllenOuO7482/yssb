@@ -20,11 +20,6 @@ RED = (255, 0, 0)
 
 class YSSBGame:
     def __init__(self): ...
-        # try:
-        #     return getattr(self, gamemode)()
-        # except AttributeError:
-        #     raise ValueError(f"Wrong GameMode: {gamemode}")
-
     class OsuMania: ...
     class PianoTiles: 
         def __init__(self) -> None:
@@ -34,13 +29,14 @@ class YSSBGame:
 
             self.keys = 'zx./'
             self.keys_count = len(self.keys)
+            self.keys_input = [False for _ in range(self.keys_count)]
             self.keys_prev = [False for _ in range(self.keys_count)]
             self.click_counter = [0 for _ in range(self.keys_count)]
             self.tile_size = (80, 100) # width, heigth
             self.yssb_normal = self.convert_img('yssb_normal.png', size=self.tile_size)
             self.yssb_orgasm = self.convert_img('yssb_orgasm.png', size=self.tile_size)
             self.tile_queue = deque(maxlen=10)
-            self.error_click = []
+            self.error_queue = deque(maxlen=1)
             self.tile_queue.append({'key': random.randint(0, self.keys_count - 1), 'pic': self.yssb_orgasm})
             self.score = 0
             self.root.after(0, self.game_loop)
@@ -49,6 +45,8 @@ class YSSBGame:
             self.hitsound = pygame.mixer.Sound(Path(__file__).parent/'hit.wav')
             self.threads_queue = deque()
             
+            self.first_click = False
+            self.error_click = False
             self.game_over = False
             self.play_gg_sound = False
 
@@ -77,7 +75,7 @@ class YSSBGame:
             self.numbers = pygame.font.Font(None, 24)
             self.clock = pygame.time.Clock()
         
-        def convert_img(self, file_name, size):
+        def convert_img(self, file_name, size, alpha=255):
             img = cv2.imread((str(Path(__file__).parent/file_name)))
             img = cv2.resize(img, size, interpolation=cv2.INTER_AREA)
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -100,6 +98,18 @@ class YSSBGame:
                 # print(x_pos, y_pos)
                 self.screen.blit(self.tile_queue[i]['pic'], tile_rect)
 
+            while len(self.error_queue) > 0:
+                i = self.error_queue.pop()
+                pygame.draw.rect(
+                    self.screen, RED, 
+                    (
+                        self.window_size[0] * 0.5 + (i-2)*self.tile_size[0], 
+                        self.window_size[1] - self.tile_size[1]*2,
+                        self.tile_size[0],
+                        self.tile_size[1]
+                    )
+                )
+
         def play_hitsound(self):
             while True:
                 if len(self.threads_queue) > 0:
@@ -109,10 +119,10 @@ class YSSBGame:
                     time.sleep(1/60)
 
         def judge_key_input(self):
-            keys_input = [kp(i) for i in self.keys]
+            self.keys_input = [kp(i) for i in self.keys]
 
-            for i in range(len(keys_input)):
-                if keys_input[i] == True and self.keys_prev[i] == False:
+            for i in range(len(self.keys_input)):
+                if self.keys_input[i] == True and self.keys_prev[i] == False:
                     if i == self.tile_queue[1]['key']:
                         self.tile_queue[1]['pic'] = self.yssb_orgasm
                         self.generate_a_tile()
@@ -122,13 +132,14 @@ class YSSBGame:
                         self.score += 1
                     
                     elif i != self.tile_queue[1]['key']:
-                        self.game_over = True
+                        self.error_queue.append(i)
+                        self.error_click = True
 
                     text = self.key_input_display.render(self.keys[i], True, BLACK)
                     text_rect = text.get_rect(center=(self.window_size[0] * 0.95, self.window_size[1] * (0.5 + 0.1 * (-self.keys_count / 2 + i))))
                     self.screen.blit(text, text_rect)
 
-                elif keys_input[i] == False and self.keys_prev[i] == True:
+                elif self.keys_input[i] == False and self.keys_prev[i] == True:
                     self.keys_prev[i] = False
 
                 counter = self.numbers.render(str(self.click_counter[i]), True, BLACK)
@@ -151,9 +162,17 @@ class YSSBGame:
                     width=2
                 ) # borders
         
-        def draw_score(self):
-            score = self.title.render(f'score: {self.score}', True, BLACK)
-            self.screen.blit(score, (10, 10))
+        def draw_score(self, coordinate=(10, 10), color=BLACK):
+            score = self.title.render(f'score: {self.score}', True, color)
+            self.screen.blit(score, coordinate)
+        
+        def draw_timer(self, coordinate=(10, 70)):
+            if hasattr(self, 'start_time'):
+                now_time = self.title.render(str('%.2f' % (30 - (time.time() - self.start_time))), True, BLACK)
+                self.screen.blit(now_time, coordinate)
+            else:
+                now_time = self.title.render('30.00', True, BLACK)
+                self.screen.blit(now_time, coordinate)
                 
         def draw(self):
             self.screen.fill(WHITE)
@@ -161,9 +180,25 @@ class YSSBGame:
             self.draw_tiles()
             self.draw_border()
             self.draw_score()
+            self.draw_timer()
             pygame.display.flip()
+            self.judge_game_state()
             self.clock.tick(60)
-        
+
+        def judge_game_state(self):
+            if self.error_click:
+                time.sleep(0.2)
+                self.error_click = False
+            
+            if not self.first_click:
+                for state in self.keys_input:
+                    if state:
+                        self.start_time = time.time()
+                        self.first_click = True
+
+            elif self.first_click and time.time() - self.start_time >= 30:
+                self.game_over = True
+
         def gg_sound(self):
             pydub.playback.play(pydub.AudioSegment.from_wav(Path(__file__).parent/'yssb_roaring.wav'))
             self.terminate()
@@ -183,10 +218,11 @@ class YSSBGame:
                     threading.Thread(target=self.gg_sound, daemon=True).start()
                     self.play_gg_sound = True
 
+                self.screen.fill(WHITE)
                 big_yssb_orgasm = pygame.transform.scale(self.yssb_orgasm, (self.tile_size[0] * 10, self.tile_size[1] * 10))
                 rect = big_yssb_orgasm.get_rect(center=(self.window_size[0] / 2, self.window_size[1] / 2))
                 self.screen.blit(big_yssb_orgasm, rect)
-                self.draw_score()
+                self.draw_score(coordinate=(self.window_size[1] * 0.5, self.window_size[0] * 0.5), color=WHITE)
                 pygame.display.flip()
                 self.clock.tick(60)
 
